@@ -14,8 +14,6 @@
 #include <uci.h>
 #include <uci_blob.h>
 
-static struct ubus_auto_conn conn;
-
 static struct publisher {
 	char *path;
 	int wildcard;
@@ -34,8 +32,10 @@ struct subscriber {
 };
 
 static struct avl_tree subscribers;
+static struct ubus_auto_conn conn;
 static struct blob_buf b;
 static uint32_t netifd;
+static char *wan;
 
 static int
 avl_intcmp(const void *k1, const void *k2, void *ptr)
@@ -108,6 +108,16 @@ subscriber_notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	}
 
 	blob_buf_init(&b, 0);
+	blobmsg_add_string(&b, "name", wan);
+	c = blobmsg_open_array(&b, "vlan");
+	snprintf(vlan, sizeof(vlan), "%d:t", vlan_id);
+	blobmsg_add_string(&b, NULL, vlan);
+	blobmsg_close_array(&b, c);
+
+	if (ubus_invoke(&conn.ctx, netifd, "add_device", b.head, NULL, 0, 1000))
+		ULOG_ERR("failed to add wan port\n");
+
+	blob_buf_init(&b, 0);
 	blobmsg_add_string(&b, "name", ifname);
 	blobmsg_add_u8(&b, "link-ext", true);
 	c = blobmsg_open_array(&b, "vlan");
@@ -117,17 +127,6 @@ subscriber_notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 
 	if (ubus_invoke(&conn.ctx, netifd, "add_device", b.head, NULL, 0, 1000))
 		ULOG_ERR("failed to add device\n");
-
-	blob_buf_init(&b, 0);
-	blobmsg_add_string(&b, "name", "wan");
-//	blobmsg_add_u8(&b, "link-ext", true);
-	c = blobmsg_open_array(&b, "vlan");
-	snprintf(vlan, sizeof(vlan), "%d:t", vlan_id);
-	blobmsg_add_string(&b, NULL, vlan);
-	blobmsg_close_array(&b, c);
-
-	if (ubus_invoke(&conn.ctx, netifd, "add_device", b.head, NULL, 0, 1000))
-		ULOG_ERR("failed to add wan port\n");
 
 	return 0;
 }
@@ -237,6 +236,11 @@ int
 main(int argc, char **argv)
 {
 	ulog_open(ULOG_STDIO | ULOG_SYSLOG, LOG_DAEMON, "dynamic-vlan");
+	if (argc != 2) {
+		ULOG_ERR("missing wan port info\n");
+		return -1;
+	}
+	wan = argv[1];
 	avl_init(&subscribers, avl_intcmp, false, NULL);
 	uloop_init();
 	conn.cb = ubus_connect_handler;
