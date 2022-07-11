@@ -31,11 +31,30 @@ struct subscriber {
 	struct ubus_subscriber subscriber;
 };
 
+struct wan_port {
+	struct list_head list;
+	char *name;
+};
+
 static struct avl_tree subscribers;
 static struct ubus_auto_conn conn;
 static struct blob_buf b;
 static uint32_t netifd;
-static char *wan;
+static LIST_HEAD(wan);
+
+static void
+wan_add(char *name)
+{
+	struct wan_port *port = malloc(sizeof(*port));
+
+	if (!port) {
+		fprintf(stderr, "failed to alloc memory for %s\n", name);
+		return;
+	}
+	memset(port, 0, sizeof(*port));
+	port->name = name;
+	list_add_tail(&port->list, &wan);
+}
 
 static int
 avl_intcmp(const void *k1, const void *k2, void *ptr)
@@ -82,6 +101,7 @@ subscriber_notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	struct subscriber *sub = container_of(subscriber, struct subscriber, subscriber);
 	uint32_t vlan_id;
 	char *ifname, vlan[16];
+	struct wan_port *port;
 	void *c;
 
 	if (!sub)
@@ -107,15 +127,18 @@ subscriber_notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 		return 0;
 	}
 
-	blob_buf_init(&b, 0);
-	blobmsg_add_string(&b, "name", wan);
-	c = blobmsg_open_array(&b, "vlan");
-	snprintf(vlan, sizeof(vlan), "%d:t", vlan_id);
-	blobmsg_add_string(&b, NULL, vlan);
-	blobmsg_close_array(&b, c);
 
-	if (ubus_invoke(&conn.ctx, netifd, "add_device", b.head, NULL, 0, 1000))
-		ULOG_ERR("failed to add wan port\n");
+	list_for_each_entry(port, &wan, list) {
+		blob_buf_init(&b, 0);
+		blobmsg_add_string(&b, "name", port->name);
+		c = blobmsg_open_array(&b, "vlan");
+		snprintf(vlan, sizeof(vlan), "%d:t", vlan_id);
+		blobmsg_add_string(&b, NULL, vlan);
+		blobmsg_close_array(&b, c);
+
+		if (ubus_invoke(&conn.ctx, netifd, "add_device", b.head, NULL, 0, 1000))
+			ULOG_ERR("failed to add wan port\n");
+	}
 
 	blob_buf_init(&b, 0);
 	blobmsg_add_string(&b, "name", ifname);
@@ -235,12 +258,15 @@ ubus_connect_handler(struct ubus_context *ctx)
 int
 main(int argc, char **argv)
 {
+	int i;
+
 	ulog_open(ULOG_STDIO | ULOG_SYSLOG, LOG_DAEMON, "dynamic-vlan");
-	if (argc != 2) {
+	if (argc < 2) {
 		ULOG_ERR("missing wan port info\n");
 		return -1;
 	}
-	wan = argv[1];
+	for (i = 1; i < argc; i++)
+		wan_add(argv[i]);
 	avl_init(&subscribers, avl_intcmp, false, NULL);
 	uloop_init();
 	conn.cb = ubus_connect_handler;
